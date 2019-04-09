@@ -1,3 +1,5 @@
+This repository was forked from [inkless/u2f-host-node](https://github.com/inkless/u2f-host-node). This module is not currently being published anywhere.
+
 U2F Host Node
 =============
 
