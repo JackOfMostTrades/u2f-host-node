@@ -1,28 +1,18 @@
-const noop = () => { /* do nothing */ };
-
-export default class Deferred<T> {
-
-  private _promise: Promise<T>;
-  private _resolve: (value?: T | PromiseLike<T>) => void = noop;
-  private _reject: (reason?: any) => void = noop;
-
-  constructor() {
-    this._promise = new Promise<T>((resolve, reject) => {
-      this._resolve = resolve;
-      this._reject = reject;
-    });
+export class PromiseHolder<T> {
+  constructor(resolve: (value?: T | PromiseLike<T>) => void, reject: (reason?: any) => void) {
+    this._resolve = resolve;
+    this._reject = reject;
   }
 
-  public get promise(): Promise<T> {
-    return this._promise;
+  private _resolve: (value?: T | PromiseLike<T>) => void;
+
+  public get resolve(): (value?: T | PromiseLike<T>) => void {
+    return this._resolve;
   }
 
-  public resolve = (value?: T | PromiseLike<T>): void => {
-    this._resolve(value);
-  }
+  private _reject: (reason?: any) => void;
 
-  public reject = (reason?: any): void => {
-    this._reject(reason);
+  public get reject(): (reason?: any) => void {
+    return this._reject;
   }
-
 }

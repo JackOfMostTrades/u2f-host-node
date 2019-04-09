@@ -64,3 +64,4 @@ dist/
 .rpt2_cache
 
 .vscode
+*.iml

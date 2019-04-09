@@ -1,6 +1,5 @@
 import { EventEmitter } from 'events';
 import { Device } from 'node-hid';
-import Deferred from './defer';
 import { IU2FAuthenticateRequest, IU2FRegisterRequest, U2FDevice } from './u2f-device';
 import { U2FHIDDevice } from './u2f-hid-device';
 import { enumerateDevices } from './util';
@@ -85,30 +84,29 @@ export class U2FHost extends EventEmitter {
     }));
   }
 
-  private async _waitForDevices() {
-    const deferred = new Deferred<Device[]>();
+  private async _waitForDevices(): Promise<Array<Device>> {
+    return new Promise<Array<Device>>((resolve, reject) => {
+      const startTime = Date.now();
+      let eventEmitted = false;
+      const poll = () => {
+        const devices = this._getDevices();
+        if (devices.length > 0) {
+          resolve(devices);
+          return;
+        }
 
-    const startTime = Date.now();
-    let eventEmitted = false;
-    const poll = () => {
-      const devices = this._getDevices();
-      if (devices.length > 0) {
-        deferred.resolve(devices);
-        return;
-      }
+        if (Date.now() - startTime > this.waitForDevicesTimeout) {
+          throw new Error('Timed out waiting for U2F device');
+        }
 
-      if (Date.now() - startTime > this.waitForDevicesTimeout) {
-        throw new Error('Timed out waiting for U2F device');
-      }
+        if (!eventEmitted) {
+          this.emit('waiting-for-device');
+          eventEmitted = true;
+        }
 
-      if (!eventEmitted) {
-        this.emit('waiting-for-device');
-        eventEmitted = true;
-      }
-
-      setTimeout(poll, this.waitForDevicesPollInterval);
-    };
-    poll();
-    return deferred.promise;
+        setTimeout(poll, this.waitForDevicesPollInterval);
+      };
+      poll();
+    });
   }
 }

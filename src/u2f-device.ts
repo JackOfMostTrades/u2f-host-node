@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
-import Deferred from './defer';
 import { U2FHIDDevice } from './u2f-hid-device';
 import { hash, invert, toWebsafeBase64 } from './util';
+import {PromiseHolder} from "./defer";
 
 // Raw U2F commands
 const U2F_REGISTER = 0x01; // Registration command
@@ -11,6 +11,7 @@ const U2F_VERSION = 0x03; // Read version string command
 // const U2F_VENDOR_LAST = 0xff;
 const U2F_AUTH_ENFORCE = 0x03; // Enforce user presence and sign
 const U2F_AUTH_CHECK_ONLY = 0x07; // Check only
+const U2F_AUTH_DONT_ENFORCE = 0x08; // Do not enforce user presence and sign
 
 const U2F_CLIENT_DATA_TYP_REGISTER = 'navigator.id.finishEnrollment';
 const U2F_CLIENT_DATA_TYP_AUTHENTICATE = 'navigator.id.getAssertion';
@@ -38,6 +39,7 @@ export interface IU2FRegisterResponse extends IU2FRegisterRequest {
 
 export interface IU2FAuthenticateRequest extends IU2FRegisterRequest {
   keyHandle: string;
+  doNotRequireUserPresence: boolean;
 }
 
 export interface IU2FAuthenticateResponse extends IU2FAuthenticateRequest {
@@ -50,6 +52,7 @@ export interface IU2FAuthenticateResponse extends IU2FAuthenticateRequest {
 export class U2FDevice extends EventEmitter {
   public interactionTimeout = 30 * 1000;
   public interactionPollInterval = 200;
+  private closed: boolean = false;
 
   constructor(public driver: U2FHIDDevice) {
     super();
@@ -80,9 +83,9 @@ export class U2FDevice extends EventEmitter {
     buf.writeUInt16BE(data.length, 5); // LC2, LC3 (LSB)
     data.copy(buf, 7);
 
-    const deferred = new Deferred<Buffer>();
-    this._sendCommand(buf, p1, Date.now(), true, deferred);
-    return deferred.promise;
+    return new Promise<Buffer>((resolve, reject) => {
+      this._sendCommand(buf, p1, Date.now(), true, new PromiseHolder<Buffer>(resolve, reject));
+    });
   }
 
   public async register(req: IU2FRegisterRequest): Promise<IU2FRegisterResponse> {
@@ -117,7 +120,8 @@ export class U2FDevice extends EventEmitter {
       keyHandle,
     ]);
 
-    const data = await this.command(U2F_AUTHENTICATE, U2F_AUTH_ENFORCE, 0, buf);
+    const data = await this.command(U2F_AUTHENTICATE,
+      req.doNotRequireUserPresence ? U2F_AUTH_DONT_ENFORCE : U2F_AUTH_ENFORCE, 0, buf);
     return {
       ...req,
       signatureData: toWebsafeBase64(data),
@@ -125,7 +129,7 @@ export class U2FDevice extends EventEmitter {
     };
   }
 
-  public async checkOnly(req: IU2FAuthenticateRequest) {
+  public async checkOnly(req: IU2FAuthenticateRequest): Promise<boolean> {
     const clientData = '';
     const keyHandle = Buffer.from(req.keyHandle, 'base64');
 
@@ -149,9 +153,12 @@ export class U2FDevice extends EventEmitter {
 
       throw e;
     }
+
+    throw new Error("U2F_AUTH_CHECK_ONLY command should have returned an error code.");
   }
 
   public close() {
+    this.closed = true;
     this.driver.close();
   }
 
@@ -160,8 +167,13 @@ export class U2FDevice extends EventEmitter {
     p1: number,
     startTime: number,
     shouldSendUserPresenceEvent: boolean,
-    deferred: Deferred<Buffer>,
+    deferred: PromiseHolder<Buffer>,
   ) {
+    if (this.closed) {
+      deferred.reject(new Error("Device has been closed."));
+      return;
+    }
+
     // Send command to the driver.
     const res = await this.driver.msg(buf);
     if (res.length < 2) {

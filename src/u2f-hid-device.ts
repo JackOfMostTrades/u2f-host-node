@@ -1,7 +1,7 @@
 import { pseudoRandomBytes } from 'crypto';
 import { EventEmitter } from 'events';
 import { Device, HID } from 'node-hid';
-import Deferred from './defer';
+import {PromiseHolder} from './defer';
 
 const U2FHID_PING = 0x80 | 0x01;
 const U2FHID_MSG = 0x80 | 0x03;
@@ -35,7 +35,7 @@ interface ITransaction {
   toReceive: number;
   receivedBytes: number;
   receivedBufs: Buffer[];
-  deferred: Deferred<Buffer>;
+  promise: PromiseHolder<Buffer>;
 }
 
 // FIDO U2F HID Protocol Specification
@@ -113,21 +113,20 @@ export class U2FHIDDevice extends EventEmitter {
       throw new Error('Sending command to a closed device');
     }
 
-    const deferred = new Deferred<Buffer>();
-    this._transactionQueue.push({
-      command,
-      data,
-      toReceive: 0xffff,
-      receivedBytes: 0,
-      receivedBufs: [],
-      deferred,
+    return new Promise<Buffer>((resolve, reject) => {
+      this._transactionQueue.push({
+        command,
+        data,
+        toReceive: 0xffff,
+        receivedBytes: 0,
+        receivedBufs: [],
+        promise: new PromiseHolder<Buffer>(resolve, reject),
+      });
+
+      if (!this._curTransaction) {
+        this._executeNextTransaction();
+      }
     });
-
-    if (!this._curTransaction) {
-      this._executeNextTransaction();
-    }
-
-    return deferred.promise;
   }
 
   public close() {
@@ -135,8 +134,26 @@ export class U2FHIDDevice extends EventEmitter {
       return;
     }
     this.closed = true;
+
+    // Reject all pending transactions
+    if (this._curTransaction) {
+      this._curTransaction.promise.reject(new Error("Device was closed before transaction completed."));
+    }
     this._curTransaction = undefined;
-    this._transactionQueue = [];
+
+    while (this._transactionQueue.length > 0) {
+      let trx = this._transactionQueue.shift();
+      if (trx) {
+        trx.promise.reject(new Error("Device was closed before transaction completed."));
+      }
+    }
+
+    // Write to device after removing listeners as a workaround for https://github.com/node-hid/node-hid/issues/61
+    // @ts-ignore
+    this.device.removeAllListeners("data");
+    // @ts-ignore
+    this.device.removeAllListeners("error");
+    this._sendCommand(U2FHID_PING);
 
     this.device.close();
     this.emit('closed');
@@ -180,7 +197,7 @@ export class U2FHIDDevice extends EventEmitter {
       const errCode = buf.readUInt8(7);
       const error = new Error(HID_ERRORS[errCode] || HID_ERRORS[0x7f]);
       (error as any).code = errCode;
-      this._curTransaction.deferred.reject(error);
+      this._curTransaction.promise.reject(error);
       return this._executeNextTransaction();
     } else if (cmd & 0x80) {
       // console.log('xx', cmd, buf)
@@ -206,7 +223,7 @@ export class U2FHIDDevice extends EventEmitter {
     // console.log('receviedBytes, toReceive', t.receivedBytes, t.toReceive)
     if (this._curTransaction.receivedBytes >= this._curTransaction.toReceive) {
       // console.log('receivedBufs', t.receivedBufs)
-      this._curTransaction.deferred.resolve(
+      this._curTransaction.promise.resolve(
         Buffer.concat(this._curTransaction.receivedBufs).slice(0, this._curTransaction.toReceive),
       );
 
@@ -226,7 +243,7 @@ export class U2FHIDDevice extends EventEmitter {
       // Can be either incorrect command/data, or the device is failed/disconnected ("Cannot write to HID device").
       // In the latter case, an 'error' event will be emitted soon.
       // TODO: We're probably in an inconsistent state now. Maybe we need to U2FHID_SYNC.
-      this._curTransaction.deferred.reject(e);
+      this._curTransaction.promise.reject(e);
       this._executeNextTransaction(); // Process next one.
     }
   }
